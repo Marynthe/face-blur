@@ -224,11 +224,14 @@ const modelsP = (async () => {
     try { ok = await faceapi.tf.setBackend('webgl'); } catch { ok = false; }
     if (!ok) await faceapi.tf.setBackend('cpu');
     await faceapi.tf.ready();
-    await Promise.all([
-      faceapi.nets.ssdMobilenetv1.loadFromUri('./model'),
-      faceapi.nets.faceLandmark68TinyNet.loadFromUri('./model'),
-      faceapi.nets.faceRecognitionNet.loadFromUri('./model'),
+    // Model files may sit in a "model" folder or next to this page (some uploaders flatten folders).
+    const loadAll = (base) => Promise.all([
+      faceapi.nets.ssdMobilenetv1.loadFromUri(base),
+      faceapi.nets.faceLandmark68TinyNet.loadFromUri(base),
+      faceapi.nets.faceRecognitionNet.loadFromUri(base),
     ]);
+    try { await loadAll('./model'); }
+    catch (e) { console.warn('model folder not found, trying page folder', e); await loadAll('.'); }
     // warm-up so the first real frame isn't slow
     const c = document.createElement('canvas'); c.width = 64; c.height = 64;
     await faceapi.detectAllFaces(c, new faceapi.SsdMobilenetv1Options({ minConfidence: 0.9 }));
