@@ -1,0 +1,861 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Face Blur</title>
+<meta name="apple-mobile-web-app-title" content="Face Blur">
+<meta name="description" content="Blur chosen faces in your videos. Everything happens on your own device.">
+<style>
+  :root {
+    --bg: #f6f5f2; --card: #ffffff; --ink: #1d1d1b; --muted: #6b6a66; --line: #e4e2dc;
+    --accent: #2f5bea; --accent-ink: #ffffff; --ok: #1f8a4c; --warn: #b4540a; --sel: #2f5bea;
+    --radius: 14px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #141414; --card: #1e1e1e; --ink: #f0efeb; --muted: #a3a29d; --line: #333230;
+      --accent: #6d8dff; --accent-ink: #0d0d0d; --ok: #4cc27f; --warn: #f0a25a; --sel: #6d8dff; }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--ink);
+    font: 16px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; -webkit-text-size-adjust: 100%; }
+  main { max-width: 760px; margin: 0 auto; padding: 16px 16px 48px; }
+  header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 4px 0 16px; flex-wrap: wrap; }
+  h1 { font-size: 22px; margin: 0; letter-spacing: -0.01em; }
+  h2 { font-size: 17px; margin: 0 0 10px; }
+  .badge { font-size: 13px; color: var(--ok); border: 1px solid currentColor; border-radius: 999px; padding: 3px 10px; white-space: nowrap; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px; margin-bottom: 14px; }
+  .muted { color: var(--muted); }
+  .small { font-size: 14px; }
+  button, .btn { font: inherit; border: 1px solid var(--line); background: var(--card); color: var(--ink);
+    border-radius: 12px; padding: 10px 14px; cursor: pointer; min-height: 44px; touch-action: manipulation; }
+  button.primary, .btn.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 600; }
+  button:disabled { opacity: .5; cursor: default; }
+  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .grow { flex: 1; }
+  .pick { display: block; text-align: center; padding: 28px 16px; border: 2px dashed var(--line); border-radius: var(--radius); cursor: pointer; }
+  .pick strong { display: block; font-size: 18px; margin-bottom: 4px; color: var(--accent); }
+  .pick input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+  .seg button { border: 0; border-radius: 0; min-height: 40px; padding: 8px 12px; }
+  .seg button + button { border-left: 1px solid var(--line); }
+  .seg button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); font-weight: 600; }
+  .bar { height: 10px; background: var(--line); border-radius: 999px; overflow: hidden; }
+  .bar > div { height: 100%; width: 0; background: var(--accent); transition: width .2s; }
+  canvas.view, video.view { display: block; width: 100%; height: auto; max-height: 62vh; object-fit: contain; background: #000; border-radius: 10px; }
+  .stage { position: relative; }
+  .people { display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 10px; }
+  .person { position: relative; padding: 6px; text-align: left; border: 2px solid var(--line); border-radius: 12px; background: var(--card); }
+  .person img { display: block; width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 8px; background: var(--line); }
+  .person .name { font-weight: 600; font-size: 14px; margin-top: 6px; }
+  .person .meta { font-size: 12px; color: var(--muted); }
+  .person .tag { position: absolute; top: 10px; left: 10px; font-size: 11px; font-weight: 700; padding: 2px 7px; border-radius: 999px; background: rgba(0,0,0,.6); color: #fff; }
+  .person[aria-pressed="true"] { border-color: var(--sel); }
+  .person[aria-pressed="true"] .tag { background: var(--sel); color: var(--accent-ink); }
+  .person[aria-pressed="true"] img { filter: blur(5px); }
+  .person .peek { display: inline-block; margin-top: 4px; min-height: 0; padding: 3px 10px; font-size: 12px; border-radius: 999px; }
+  input[type=range] { width: 100%; accent-color: var(--accent); }
+  label.ctl { display: block; font-size: 14px; margin: 10px 0 4px; }
+  .note { font-size: 14px; padding: 10px 12px; border-radius: 10px; background: color-mix(in srgb, var(--accent) 10%, transparent); }
+  .warn { color: var(--warn); }
+  .err { color: #c0392b; }
+  details summary { cursor: pointer; font-weight: 600; }
+  [hidden] { display: none !important; }
+  #v, #ev { position: fixed; left: -10px; top: -10px; width: 4px; height: 4px; opacity: 0.01; pointer-events: none; }
+  .time { font-variant-numeric: tabular-nums; font-size: 14px; color: var(--muted); min-width: 92px; text-align: right; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Face Blur</h1>
+    <span class="badge" title="No upload: your video is processed by your own browser.">● Stays on your device</span>
+  </header>
+
+  <!-- STEP 1: pick -->
+  <section id="stepPick">
+    <div class="card">
+      <label class="pick" id="pickLabel">
+        <strong>Choose a video</strong>
+        <span class="muted small">From your phone's gallery or files</span>
+        <input type="file" id="file" accept="video/*">
+      </label>
+      <p id="modelStatus" class="small muted" style="margin:12px 0 0">Loading face detection…</p>
+    </div>
+    <div class="card">
+      <h2>Scan detail</h2>
+      <div class="seg" role="group" aria-label="Scan detail">
+        <button data-mode="standard" aria-pressed="true">Standard</button>
+        <button data-mode="thorough" aria-pressed="false">Thorough</button>
+      </div>
+      <p class="small muted" style="margin:8px 0 0">Use <b>Thorough</b> for group shots or people far from the camera. It finds smaller faces but takes about 3–4 times longer.</p>
+    </div>
+    <details class="card">
+      <summary>How it works</summary>
+      <ol class="small">
+        <li>The app scans your video and finds every face.</li>
+        <li>It groups faces by person. Tap the people you want to blur.</li>
+        <li>Check the preview. Tap a face there to blur or unblur just that moment.</li>
+        <li>Create the new video and save it. Your original isn't changed.</li>
+      </ol>
+      <p class="small muted">Your video is never uploaded. Face detection runs in this browser using the open-source face-api models included with this page. After the page has loaded it even works offline.</p>
+      <p class="small muted">Face detection: <a href="https://github.com/vladmandic/face-api">face-api</a> by Vladimir Mandic (MIT licence), built on TensorFlow.js.</p>
+      <p class="small muted">Tips: short clips (under 1–2 minutes) work best on a phone. Keep the screen on while it works.</p>
+    </details>
+  </section>
+
+  <!-- STEP 2: scanning -->
+  <section id="stepScan" hidden>
+    <div class="card">
+      <h2>Finding faces…</h2>
+      <div class="bar"><div id="scanBar"></div></div>
+      <div class="row small muted" style="margin:8px 0 12px"><span id="scanText" class="grow">Starting…</span><span id="scanEta"></span></div>
+      <canvas id="scanView" class="view"></canvas>
+      <div class="row" style="margin-top:12px"><button id="scanCancel">Cancel</button></div>
+    </div>
+  </section>
+
+  <!-- STEP 3: edit -->
+  <section id="stepEdit" hidden>
+    <div class="card">
+      <div class="stage"><canvas id="preview" class="view"></canvas></div>
+      <div class="row" style="margin-top:10px">
+        <button id="playBtn" aria-label="Play">▶</button>
+        <input type="range" id="scrub" class="grow" min="0" max="1" step="0.01" value="0" aria-label="Position">
+        <span class="time" id="timeLbl">0:00 / 0:00</span>
+      </div>
+      <p class="small muted" style="margin:8px 0 0">Tap a face in the preview to blur or unblur just that appearance. The preview is silent; the saved video keeps its sound.</p>
+      <label class="row small" style="margin-top:6px"><input type="checkbox" id="outlines" checked> Show face outlines</label>
+    </div>
+
+    <div class="card">
+      <div class="row" style="margin-bottom:10px">
+        <h2 class="grow" style="margin:0">People found</h2>
+        <button id="selAll" class="small">Blur all</button>
+        <button id="selNone" class="small">Clear</button>
+      </div>
+      <p id="peopleHint" class="small muted" style="margin:0 0 10px">Tap a person to blur them. If someone appears twice, tap both.</p>
+      <div class="people" id="people"></div>
+    </div>
+
+    <div class="card">
+      <h2>Style</h2>
+      <div class="seg" role="group" aria-label="Style" id="styleSeg">
+        <button data-style="blur" aria-pressed="true">Blur</button>
+        <button data-style="pixel" aria-pressed="false">Pixelate</button>
+        <button data-style="solid" aria-pressed="false">Solid</button>
+      </div>
+      <label class="ctl" for="strength">Strength</label>
+      <input type="range" id="strength" min="0" max="1" step="0.05" value="0.6">
+      <label class="ctl" for="size">Area size</label>
+      <input type="range" id="size" min="0" max="1" step="0.05" value="0.45">
+    </div>
+
+    <div class="card">
+      <div class="row">
+        <button id="toStart">Start over</button>
+        <span class="grow"></span>
+        <button id="exportBtn" class="primary">Create blurred video</button>
+      </div>
+      <p id="exportHint" class="small muted" style="margin:10px 0 0"></p>
+    </div>
+  </section>
+
+  <!-- STEP 4: exporting -->
+  <section id="stepExport" hidden>
+    <div class="card">
+      <h2>Creating your video…</h2>
+      <div class="bar"><div id="expBar"></div></div>
+      <div class="row small muted" style="margin:8px 0 12px"><span id="expText" class="grow">Starting…</span></div>
+      <p class="note" style="margin:0 0 12px">Keep this screen open and switched on. The video is recorded while it plays, so this takes as long as the video itself.</p>
+      <canvas id="expView" class="view"></canvas>
+      <div class="row" style="margin-top:12px"><button id="expCancel">Cancel</button></div>
+    </div>
+  </section>
+
+  <!-- STEP 5: done -->
+  <section id="stepDone" hidden>
+    <div class="card">
+      <h2>Your blurred video is ready</h2>
+      <video id="result" class="view" controls playsinline></video>
+      <div class="row" style="margin-top:12px">
+        <button id="backEdit">Back to editing</button>
+        <span class="grow"></span>
+        <button id="saveBtn" class="primary">Save video</button>
+      </div>
+      <p class="small" style="margin:10px 0 0">Not working? <a href="#" id="dlBtn">Download file</a> instead.</p>
+      <p id="saveMsg" class="small muted" style="margin:10px 0 0"></p>
+    </div>
+  </section>
+</main>
+
+<video id="v" playsinline muted preload="auto"></video>
+<video id="ev" playsinline preload="auto"></video>
+
+<script type="module">
+import * as faceapi from './face-api.esm.js';
+
+const $ = (id) => document.getElementById(id);
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const fmt = (s) => { s = Math.max(0, Math.floor(s || 0)); return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); };
+const clamp = (x, a, b) => Math.min(b, Math.max(a, x));
+
+const v = $('v');      // video used for scanning + preview (muted)
+const ev = $('ev');    // video used for export (with sound)
+
+const S = {
+  file: null, url: null, name: 'video', duration: 0, vw: 0, vh: 0,
+  mode: 'standard', sampleDt: 0.2,
+  tracks: [], people: [],
+  style: 'blur', strength: 0.6, size: 0.45,
+  cancel: false, resultBlob: null, resultExt: 'mp4',
+};
+
+// ---------- step switching ----------
+const steps = ['stepPick', 'stepScan', 'stepEdit', 'stepExport', 'stepDone'];
+function show(id) { for (const s of steps) $(s).hidden = s !== id; window.scrollTo(0, 0); }
+
+
+// ---------- models ----------
+let modelsOk = false;
+const modelsP = (async () => {
+  try {
+    let ok = false;
+    try { ok = await faceapi.tf.setBackend('webgl'); } catch { ok = false; }
+    if (!ok) await faceapi.tf.setBackend('cpu');
+    await faceapi.tf.ready();
+    await Promise.all([
+      faceapi.nets.ssdMobilenetv1.loadFromUri('./model'),
+      faceapi.nets.faceLandmark68TinyNet.loadFromUri('./model'),
+      faceapi.nets.faceRecognitionNet.loadFromUri('./model'),
+    ]);
+    // warm-up so the first real frame isn't slow
+    const c = document.createElement('canvas'); c.width = 64; c.height = 64;
+    await faceapi.detectAllFaces(c, new faceapi.SsdMobilenetv1Options({ minConfidence: 0.9 }));
+    modelsOk = true;
+    $('modelStatus').textContent = 'Face detection ready' + (faceapi.tf.getBackend() === 'cpu' ? ' (slow mode: this browser has no graphics acceleration)' : '') + '.';
+  } catch (e) {
+    console.error(e);
+    $('modelStatus').innerHTML = '<span class="err">Face detection could not load in this browser. Try reloading the page, or use an up-to-date Chrome or Safari.</span>';
+    throw e;
+  }
+})();
+modelsP.catch(() => {});
+
+// ---------- step 1 ----------
+document.querySelectorAll('[data-mode]').forEach((b) => b.addEventListener('click', () => {
+  S.mode = b.dataset.mode;
+  document.querySelectorAll('[data-mode]').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
+}));
+
+$('file').addEventListener('change', async (e) => {
+  const f = e.target.files && e.target.files[0];
+  e.target.value = '';
+  if (!f) return;
+  try { await startWithFile(f); }
+  catch (err) { console.error(err); show('stepPick'); $('modelStatus').innerHTML = '<span class="err">' + (err.message || 'Something went wrong.') + '</span>'; }
+});
+
+function waitEvent(el, ok, bad, ms = 20000) {
+  return new Promise((res, rej) => {
+    const t = setTimeout(() => { cleanup(); rej(new Error('This video took too long to load.')); }, ms);
+    const a = () => { cleanup(); res(); };
+    const b = () => { cleanup(); rej(new Error("This browser can't play this video. Try a different video or browser.")); };
+    function cleanup() { clearTimeout(t); el.removeEventListener(ok, a); if (bad) el.removeEventListener(bad, b); }
+    el.addEventListener(ok, a); if (bad) el.addEventListener(bad, b);
+  });
+}
+
+async function getDuration(video) {
+  if (isFinite(video.duration) && video.duration > 0) return video.duration;
+  // some recorded files report Infinity until you seek to the end
+  video.currentTime = 1e9;
+  await waitEvent(video, 'seeked', 'error', 10000).catch(() => {});
+  const d = video.duration; video.currentTime = 0;
+  return isFinite(d) ? d : 0;
+}
+
+async function startWithFile(f) {
+  if (S.url) URL.revokeObjectURL(S.url);
+  S.file = f; S.name = (f.name || 'video').replace(/\.[^.]+$/, '') || 'video';
+  S.url = URL.createObjectURL(f);
+  v.src = S.url; v.load();
+  // iPhones only decode frames after a play() call; the video is muted so this is allowed
+  const unlock = v.play(); if (unlock && unlock.then) unlock.then(() => v.pause()).catch(() => {});
+  await waitEvent(v, 'loadedmetadata', 'error');
+  if (v.readyState < 2) await waitEvent(v, 'loadeddata', 'error', 8000).catch(() => {});
+  v.pause();
+  S.vw = v.videoWidth; S.vh = v.videoHeight;
+  S.duration = await getDuration(v);
+  if (!S.vw || !S.duration) throw new Error("Couldn't read this video. Try a different file.");
+  ev.src = S.url; ev.load();
+  show('stepScan');
+  $('scanText').textContent = 'Preparing face detection…';
+  await modelsP;
+  await scan();
+}
+
+// ---------- seeking ----------
+function seekTo(video, t) {
+  return new Promise((res) => {
+    let done = false;
+    const fin = () => { if (done) return; done = true; video.removeEventListener('seeked', onSeeked); clearTimeout(guard); res(); };
+    const onSeeked = () => {
+      if (video.requestVideoFrameCallback) { video.requestVideoFrameCallback(() => fin()); setTimeout(fin, 120); }
+      else setTimeout(fin, 20);
+    };
+    const guard = setTimeout(fin, 4000);
+    video.addEventListener('seeked', onSeeked);
+    video.currentTime = t;
+  });
+}
+
+// ---------- detection ----------
+const dcan = document.createElement('canvas');
+const dctx = dcan.getContext('2d', { willReadFrequently: false });
+const tcan = document.createElement('canvas');
+const tctx2 = tcan.getContext('2d');
+
+function iou(a, b) {
+  const x1 = Math.max(a.x, b.x), y1 = Math.max(a.y, b.y);
+  const x2 = Math.min(a.x + a.w, b.x + b.w), y2 = Math.min(a.y + a.h, b.y + b.h);
+  const i = Math.max(0, x2 - x1) * Math.max(0, y2 - y1);
+  return i / (a.w * a.h + b.w * b.h - i || 1);
+}
+function dist(a, b) { let s = 0; for (let i = 0; i < a.length; i++) { const d = a[i] - b[i]; s += d * d; } return Math.sqrt(s); }
+
+async function detectOn(canvas, ox, oy, sx, sy, W, H) {
+  const opts = new faceapi.SsdMobilenetv1Options({ minConfidence: 0.4, maxResults: 100 });
+  const res = await faceapi.detectAllFaces(canvas, opts).withFaceLandmarks(true).withFaceDescriptors();
+  return res.map((r) => {
+    const b = r.detection.box;
+    return { x: (ox + b.x * sx) / W, y: (oy + b.y * sy) / H, w: (b.width * sx) / W, h: (b.height * sy) / H,
+             s: r.detection.score, d: r.descriptor };
+  }).filter((d) => d.w > 0.004 && d.h > 0.004);
+}
+
+async function detectFrame() {
+  const W = dcan.width, H = dcan.height;
+  let dets = await detectOn(dcan, 0, 0, 1, 1, W, H);
+  if (S.mode === 'thorough') {
+    // overlapping 2x2 tiles, each enlarged, to catch small faces
+    const tw = Math.round(W * 0.6), th = Math.round(H * 0.6);
+    const scale = Math.min(2, 640 / Math.max(tw, th)) || 1;
+    tcan.width = Math.round(tw * scale); tcan.height = Math.round(th * scale);
+    for (const fx of [0, 0.4]) for (const fy of [0, 0.4]) {
+      const ox = Math.round(W * fx), oy = Math.round(H * fy);
+      tctx2.drawImage(dcan, ox, oy, tw, th, 0, 0, tcan.width, tcan.height);
+      const more = await detectOn(tcan, ox, oy, 1 / scale, 1 / scale, W, H);
+      dets = dets.concat(more);
+    }
+    // non-maximum suppression
+    dets.sort((a, b) => b.s - a.s);
+    const keep = [];
+    for (const d of dets) if (!keep.some((k) => iou(k, d) > 0.35 || containsMost(k, d))) keep.push(d);
+    dets = keep;
+  }
+  return dets;
+}
+function containsMost(a, b) {
+  const x1 = Math.max(a.x, b.x), y1 = Math.max(a.y, b.y);
+  const x2 = Math.min(a.x + a.w, b.x + b.w), y2 = Math.min(a.y + a.h, b.y + b.h);
+  const i = Math.max(0, x2 - x1) * Math.max(0, y2 - y1);
+  return i > 0.7 * Math.min(a.w * a.h, b.w * b.h);
+}
+
+// ---------- tracking ----------
+const MAX_GAP = 1.2;   // seconds a face may be missed and still count as the same appearance
+let nextTrackId = 1;
+
+function predict(tr, t) {
+  const p = tr.pts, last = p[p.length - 1];
+  if (p.length < 2) return last;
+  const prev = p[p.length - 2], dt = last.t - prev.t || 1;
+  const k = clamp((t - last.t) / dt, 0, 2);
+  return { x: last.x + (last.x - prev.x) * k, y: last.y + (last.y - prev.y) * k, w: last.w, h: last.h };
+}
+
+function makeThumb(d) {
+  const W = dcan.width, H = dcan.height;
+  const cx = (d.x + d.w / 2) * W, cy = (d.y + d.h / 2) * H, s = Math.max(d.w * W, d.h * H) * 1.5;
+  const c = document.createElement('canvas'); c.width = c.height = 120;
+  const x = c.getContext('2d');
+  x.fillStyle = '#888'; x.fillRect(0, 0, 120, 120);
+  x.drawImage(dcan, cx - s / 2, cy - s / 2, s, s, 0, 0, 120, 120);
+  return c.toDataURL('image/jpeg', 0.82);
+}
+
+function assign(dets, t, cut) {
+  const active = cut ? [] : S.tracks.filter((tr) => t - tr.lastT <= MAX_GAP + 1e-6);
+  const pairs = [];
+  dets.forEach((d, di) => active.forEach((tr, ti) => {
+    const pr = predict(tr, t);
+    const o = iou(pr, d);
+    const dd = dist(tr.mean, d.d);
+    const cdx = (pr.x + pr.w / 2) - (d.x + d.w / 2), cdy = (pr.y + pr.h / 2) - (d.y + d.h / 2);
+    const cd = Math.hypot(cdx, cdy) / Math.max(pr.w, d.w);
+    let okm = false;
+    if (o > 0.3 && dd < 0.6) okm = true;              // same place, similar face
+    else if (o > 0.05 && dd < 0.5) okm = true;        // moved a bit
+    else if (cd < 2.5 && dd < 0.4) okm = true;        // moved fast, clearly same face
+    if (okm) pairs.push({ di, ti, cost: dd - 0.6 * o });
+  }));
+  pairs.sort((a, b) => a.cost - b.cost);
+  const usedD = new Set(), usedT = new Set();
+  for (const p of pairs) {
+    if (usedD.has(p.di) || usedT.has(p.ti)) continue;
+    usedD.add(p.di); usedT.add(p.ti);
+    addToTrack(active[p.ti], dets[p.di], t);
+  }
+  dets.forEach((d, di) => {
+    if (usedD.has(di)) return;
+    const tr = { id: nextTrackId++, pts: [], sum: new Float32Array(128), n: 0, mean: new Float32Array(128),
+                 lastT: t, thumb: null, thumbScore: -1, override: null, person: null, maxS: 0 };
+    S.tracks.push(tr);
+    addToTrack(tr, d, t);
+  });
+}
+
+function addToTrack(tr, d, t) {
+  tr.pts.push({ t, x: d.x, y: d.y, w: d.w, h: d.h });
+  tr.lastT = t; tr.maxS = Math.max(tr.maxS, d.s);
+  const wgt = d.s;
+  for (let i = 0; i < 128; i++) tr.sum[i] += d.d[i] * wgt;
+  tr.n += wgt;
+  for (let i = 0; i < 128; i++) tr.mean[i] = tr.sum[i] / tr.n;
+  const q = d.s * Math.sqrt(d.w * d.h);  // prefer confident, large faces for the thumbnail
+  if (q > tr.thumbScore) { tr.thumbScore = q; tr.thumb = makeThumb(d); }
+}
+
+// ---------- grouping appearances into people ----------
+function groupPeople() {
+  const tracks = S.tracks;
+  const clusters = tracks.map((tr) => ({ tracks: [tr] }));
+  const span = (tr) => [tr.pts[0].t - 0.01, tr.pts[tr.pts.length - 1].t + 0.01];
+  const overlaps = (A, B) => A.tracks.some((a) => B.tracks.some((b) => {
+    const [a0, a1] = span(a), [b0, b1] = span(b);
+    return Math.min(a1, b1) - Math.max(a0, b0) > S.sampleDt * 1.5; // on screen at the same time => different people
+  }));
+  const D = new Map();
+  const key = (a, b) => a.id < b.id ? a.id + ':' + b.id : b.id + ':' + a.id;
+  for (let i = 0; i < tracks.length; i++) for (let j = i + 1; j < tracks.length; j++) D.set(key(tracks[i], tracks[j]), dist(tracks[i].mean, tracks[j].mean));
+  const link = (A, B) => { let s = 0, n = 0; for (const a of A.tracks) for (const b of B.tracks) { s += D.get(key(a, b)); n++; } return s / n; };
+  const THRESH = 0.42;  // strict: better to show one person twice than to mix up two people
+  for (;;) {
+    let best = null, bd = THRESH;
+    for (let i = 0; i < clusters.length; i++) for (let j = i + 1; j < clusters.length; j++) {
+      const d = link(clusters[i], clusters[j]);
+      if (d < bd && !overlaps(clusters[i], clusters[j])) { bd = d; best = [i, j]; }
+    }
+    if (!best) break;
+    clusters[best[0]].tracks.push(...clusters[best[1]].tracks);
+    clusters.splice(best[1], 1);
+  }
+  const people = clusters.map((c) => {
+    let time = 0, thumb = null, ts = -1;
+    for (const tr of c.tracks) {
+      time += Math.max(S.sampleDt, tr.pts[tr.pts.length - 1].t - tr.pts[0].t + S.sampleDt);
+      if (tr.thumbScore > ts) { ts = tr.thumbScore; thumb = tr.thumb; }
+    }
+    c.tracks.sort((a, b) => a.pts[0].t - b.pts[0].t);
+    return { tracks: c.tracks, time, thumb, selected: false, first: c.tracks[0].pts[0].t };
+  }).sort((a, b) => b.time - a.time);
+  people.forEach((p, i) => { p.label = 'Person ' + (i + 1); p.short = 'P' + (i + 1); p.tracks.forEach((tr) => tr.person = p); });
+  S.people = people;
+}
+
+// ---------- scanning ----------
+const scanView = $('scanView'), sctx = scanView.getContext('2d');
+$('scanCancel').addEventListener('click', () => { S.cancel = true; });
+
+async function scan() {
+  S.cancel = false; S.tracks = []; S.people = []; nextTrackId = 1; prevSig = null;
+  S.sampleDt = 0.2;
+  const longSide = S.mode === 'thorough' ? 1280 : 1024;
+  const sc = Math.min(1, longSide / Math.max(S.vw, S.vh));
+  dcan.width = Math.round(S.vw * sc); dcan.height = Math.round(S.vh * sc);
+  const vs = Math.min(1, 720 / Math.max(S.vw, S.vh));
+  scanView.width = Math.round(S.vw * vs); scanView.height = Math.round(S.vh * vs);
+  const times = [];
+  for (let t = 0; t < S.duration - 0.02; t += S.sampleDt) times.push(+t.toFixed(3));
+  if (!times.length) times.push(0);
+  const t0 = performance.now();
+  for (let i = 0; i < times.length; i++) {
+    if (S.cancel) { show('stepPick'); return; }
+    const t = times[i];
+    await seekTo(v, t);
+    dctx.drawImage(v, 0, 0, dcan.width, dcan.height);
+    const cut = sceneCut();
+    const dets = await detectFrame();
+    assign(dets, t, cut);
+    // live view
+    sctx.drawImage(dcan, 0, 0, scanView.width, scanView.height);
+    sctx.lineWidth = 3; sctx.strokeStyle = '#6d8dff';
+    for (const d of dets) sctx.strokeRect(d.x * scanView.width, d.y * scanView.height, d.w * scanView.width, d.h * scanView.height);
+    const frac = (i + 1) / times.length;
+    $('scanBar').style.width = (frac * 100).toFixed(1) + '%';
+    $('scanText').textContent = `${fmt(t)} of ${fmt(S.duration)} scanned · ${S.tracks.length ? countPeopleRough() : 0} face${S.tracks.length === 1 ? '' : 's'} so far`;
+    const el = (performance.now() - t0) / 1000, eta = el / frac - el;
+    if (i > 3) $('scanEta').textContent = 'about ' + (eta < 60 ? Math.ceil(eta / 5) * 5 + ' s' : Math.ceil(eta / 60) + ' min') + ' left';
+    if (i % 2 === 0) await sleep(0);
+  }
+  // drop one-off, low-confidence detections (likely not faces)
+  S.tracks = S.tracks.filter((tr) => !(tr.pts.length === 1 && tr.maxS < 0.6));
+  groupPeople();
+  enterEdit();
+}
+// detect hard cuts between shots so faces in different shots are never linked by position
+const ccan = document.createElement('canvas'); ccan.width = 32; ccan.height = 18;
+const cctx = ccan.getContext('2d', { willReadFrequently: true });
+let prevSig = null;
+function sceneCut() {
+  cctx.drawImage(dcan, 0, 0, 32, 18);
+  const d = cctx.getImageData(0, 0, 32, 18).data, sig = new Float32Array(32 * 18);
+  for (let i = 0; i < sig.length; i++) sig[i] = 0.299 * d[i * 4] + 0.587 * d[i * 4 + 1] + 0.114 * d[i * 4 + 2];
+  let diff = 0;
+  if (prevSig) { for (let i = 0; i < sig.length; i++) diff += Math.abs(sig[i] - prevSig[i]); diff /= sig.length; }
+  prevSig = sig;
+  return diff > 35;
+}
+function countPeopleRough() { return S.tracks.filter((tr) => tr.pts.length > 1 || tr.maxS >= 0.6).length; }
+
+// ---------- rendering effects ----------
+const small = document.createElement('canvas'); const smctx = small.getContext('2d');
+const mid = document.createElement('canvas'); const midctx = mid.getContext('2d');
+
+function boxAt(tr, t) {
+  const p = tr.pts, half = S.sampleDt * 0.75 + 0.1;
+  if (t < p[0].t - half || t > p[p.length - 1].t + half) return null;
+  if (t <= p[0].t) return p[0];
+  if (t >= p[p.length - 1].t) return p[p.length - 1];
+  let lo = 0, hi = p.length - 1;
+  while (hi - lo > 1) { const m = (lo + hi) >> 1; if (p[m].t <= t) lo = m; else hi = m; }
+  const a = p[lo], b = p[hi], k = (t - a.t) / (b.t - a.t || 1);
+  return { x: a.x + (b.x - a.x) * k, y: a.y + (b.y - a.y) * k, w: a.w + (b.w - a.w) * k, h: a.h + (b.h - a.h) * k };
+}
+function isBlurred(tr) { return tr.override !== null ? tr.override : tr.person.selected; }
+
+function region(b, W, H) {
+  const grow = 1.15 + S.size * 0.9;
+  const w = b.w * W * grow, h = b.h * H * grow * 1.12;
+  const cx = (b.x + b.w / 2) * W, cy = (b.y + b.h / 2) * H - b.h * H * 0.06;
+  return { x: cx - w / 2, y: cy - h / 2, w, h, cx, cy };
+}
+
+function applyEffect(ctx, r) {
+  const W = ctx.canvas.width, H = ctx.canvas.height;
+  const x = clamp(Math.floor(r.x), 0, W - 1), y = clamp(Math.floor(r.y), 0, H - 1);
+  const w = clamp(Math.ceil(r.w), 1, W - x), h = clamp(Math.ceil(r.h), 1, H - y);
+  if (w < 2 || h < 2) return;
+  if (S.style === 'solid') {
+    ctx.save(); ctx.fillStyle = '#1b1b1b';
+    ctx.beginPath(); ctx.ellipse(r.cx, r.cy, r.w / 2, r.h / 2, 0, 0, Math.PI * 2); ctx.fill(); ctx.restore();
+    return;
+  }
+  if (S.style === 'pixel') {
+    const n = Math.round(14 - 9 * S.strength); // blocks across the face
+    const nw = Math.max(2, n), nh = Math.max(2, Math.round(n * h / w));
+    small.width = nw; small.height = nh;
+    smctx.imageSmoothingEnabled = true;
+    smctx.drawImage(ctx.canvas, x, y, w, h, 0, 0, nw, nh);
+    ctx.save(); ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(small, 0, 0, nw, nh, x, y, w, h);
+    ctx.restore();
+    return;
+  }
+  // blur: shrink in two steps, then enlarge smoothly, clipped to an ellipse
+  const n = Math.round(10 - 7 * S.strength);
+  const mw = Math.max(4, Math.min(48, Math.round(w / 4))), mh = Math.max(4, Math.round(mw * h / w));
+  mid.width = mw; mid.height = mh;
+  midctx.imageSmoothingEnabled = true; midctx.imageSmoothingQuality = 'high';
+  midctx.drawImage(ctx.canvas, x, y, w, h, 0, 0, mw, mh);
+  const nw = Math.max(2, n), nh = Math.max(2, Math.round(n * h / w));
+  small.width = nw; small.height = nh;
+  smctx.imageSmoothingEnabled = true; smctx.imageSmoothingQuality = 'high';
+  smctx.drawImage(mid, 0, 0, mw, mh, 0, 0, nw, nh);
+  ctx.save();
+  ctx.beginPath(); ctx.ellipse(r.cx, r.cy, r.w / 2, r.h / 2, 0, 0, Math.PI * 2); ctx.clip();
+  ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = 'high';
+  // draw slightly beyond the region so the smooth edge reaches the ellipse border
+  const px = w / nw, py = h / nh;
+  ctx.drawImage(small, 0, 0, nw, nh, x - px / 2, y - py / 2, w + px, h + py);
+  ctx.restore();
+}
+
+function renderFrame(ctx, video, t, outlines) {
+  const W = ctx.canvas.width, H = ctx.canvas.height;
+  ctx.drawImage(video, 0, 0, W, H);
+  const shown = [];
+  for (const tr of S.tracks) {
+    const b = boxAt(tr, t);
+    if (!b) continue;
+    const r = region(b, W, H), bl = isBlurred(tr);
+    if (bl) applyEffect(ctx, r);
+    shown.push({ tr, r, bl });
+  }
+  if (outlines) {
+    const lw = Math.max(2, W / 400);
+    ctx.save(); ctx.lineWidth = lw; ctx.font = `600 ${Math.max(12, Math.round(W / 45))}px system-ui, sans-serif`;
+    for (const s of shown) {
+      ctx.setLineDash(s.bl ? [] : [lw * 3, lw * 2]);
+      ctx.strokeStyle = s.bl ? '#6d8dff' : 'rgba(255,255,255,0.9)';
+      ctx.beginPath(); ctx.ellipse(s.r.cx, s.r.cy, s.r.w / 2, s.r.h / 2, 0, 0, Math.PI * 2); ctx.stroke();
+      const lbl = s.tr.person.short + (s.tr.override !== null ? '*' : '');
+      const tw = ctx.measureText(lbl).width + 10, th = parseInt(ctx.font.match(/(\d+)px/)[1]) + 6;
+      const lx = s.r.cx - tw / 2, ly = Math.max(0, s.r.y - th - 2);
+      ctx.fillStyle = s.bl ? '#6d8dff' : 'rgba(0,0,0,0.65)'; ctx.fillRect(lx, ly, tw, th);
+      ctx.fillStyle = s.bl ? '#0d0d0d' : '#fff'; ctx.textBaseline = 'middle'; ctx.fillText(lbl, lx + 5, ly + th / 2);
+    }
+    ctx.restore();
+  }
+  return shown;
+}
+
+// ---------- edit step ----------
+const pv = $('preview'), pctx = pv.getContext('2d');
+let lastShown = [], playing = false;
+
+function enterEdit() {
+  const s = Math.min(1, 1280 / Math.max(S.vw, S.vh));
+  pv.width = Math.round(S.vw * s); pv.height = Math.round(S.vh * s);
+  $('scrub').max = S.duration.toFixed(2);
+  renderPeople();
+  show('stepEdit');
+  // jump to the first face, if any
+  const first = S.people.length ? Math.min(...S.people.map((p) => p.first)) : 0;
+  seekPreview(first);
+  updateExportHint();
+}
+
+function renderPeople() {
+  const box = $('people'); box.innerHTML = '';
+  $('peopleHint').textContent = S.people.length
+    ? 'Tap a person to blur them. If someone shows up twice, tap both.'
+    : 'No faces were found. Try the Thorough scan, or a video where faces are clearly visible.';
+  for (const p of S.people) {
+    const b = document.createElement('button');
+    b.className = 'person'; b.setAttribute('aria-pressed', String(p.selected));
+    const changed = p.tracks.filter((t) => t.override !== null).length;
+    b.innerHTML = `<img alt="" src="${p.thumb}"><span class="tag">${p.selected ? 'Blurred' : 'Visible'}</span>
+      <div class="name">${p.label}</div><div class="meta">${Math.max(1, Math.round(p.time))} s on screen${changed ? ` · ${changed} changed` : ''}</div>`;
+    const peek = document.createElement('span'); peek.className = 'btn peek'; peek.textContent = 'Show'; peek.setAttribute('role', 'button');
+    peek.addEventListener('click', (e) => { e.stopPropagation(); pausePreview(); seekPreview(p.first + 0.05); pv.scrollIntoView({ behavior: 'smooth', block: 'center' }); });
+    b.appendChild(peek);
+    b.addEventListener('click', () => { p.selected = !p.selected; p.tracks.forEach((t) => t.override = null); renderPeople(); drawPreview(); updateExportHint(); });
+    box.appendChild(b);
+  }
+}
+
+function updateExportHint() {
+  const n = S.people.filter((p) => p.selected).length;
+  const manual = S.tracks.some((t) => t.override === true);
+  $('exportHint').textContent = (n || manual)
+    ? `${n ? `${n} ${n === 1 ? 'person' : 'people'}${manual ? ' and the faces you tapped' : ''}` : 'The faces you tapped'} will be blurred. Creating the video takes as long as the video plays (${fmt(S.duration)}).`
+    : 'Nobody is selected yet, so nothing will be blurred.';
+}
+
+function drawPreview() {
+  const t = v.currentTime;
+  lastShown = renderFrame(pctx, v, t, $('outlines').checked);
+  $('timeLbl').textContent = fmt(t) + ' / ' + fmt(S.duration);
+  if (!scrubbing) $('scrub').value = t.toFixed(2);
+}
+
+async function seekPreview(t) { await seekTo(v, clamp(t, 0, Math.max(0, S.duration - 0.03))); drawPreview(); }
+
+function loop() {
+  if (!playing) return;
+  drawPreview();
+  if (v.requestVideoFrameCallback) v.requestVideoFrameCallback(loop); else requestAnimationFrame(loop);
+}
+function pausePreview() { if (playing) { playing = false; v.pause(); $('playBtn').textContent = '▶'; } }
+$('playBtn').addEventListener('click', async () => {
+  if (playing) { pausePreview(); drawPreview(); return; }
+  if (v.currentTime >= S.duration - 0.05) await seekTo(v, 0);
+  try { await v.play(); } catch (e) { console.warn(e); return; }
+  playing = true; $('playBtn').textContent = '❚❚'; loop();
+});
+v.addEventListener('ended', () => { playing = false; $('playBtn').textContent = '▶'; drawPreview(); });
+
+let scrubbing = false, scrubPending = null, scrubBusy = false;
+$('scrub').addEventListener('input', async (e) => {
+  scrubbing = true; pausePreview();
+  scrubPending = +e.target.value;
+  if (scrubBusy) return;
+  scrubBusy = true;
+  while (scrubPending !== null) { const t = scrubPending; scrubPending = null; await seekPreview(t); }
+  scrubBusy = false; scrubbing = false;
+});
+$('outlines').addEventListener('change', drawPreview);
+
+pv.addEventListener('click', (e) => {
+  const rect = pv.getBoundingClientRect();
+  // canvas is shown with object-fit: contain
+  const ar = pv.width / pv.height, rr = rect.width / rect.height;
+  let dw = rect.width, dh = rect.height, ox = 0, oy = 0;
+  if (rr > ar) { dw = rect.height * ar; ox = (rect.width - dw) / 2; } else { dh = rect.width / ar; oy = (rect.height - dh) / 2; }
+  const x = (e.clientX - rect.left - ox) / dw * pv.width, y = (e.clientY - rect.top - oy) / dh * pv.height;
+  if (playing) { pausePreview(); drawPreview(); }
+  const shown = renderFrame(pctx, v, v.currentTime, false);
+  let hit = null, bestD = Infinity;
+  for (const s of shown) {
+    const dx = (x - s.r.cx) / (s.r.w / 2), dy = (y - s.r.cy) / (s.r.h / 2), d = dx * dx + dy * dy;
+    if (d <= 1.3 && d < bestD) { bestD = d; hit = s.tr; }
+  }
+  if (hit) {
+    const now = !isBlurred(hit);
+    hit.override = now === hit.person.selected ? null : now;
+    renderPeople(); updateExportHint();
+  }
+  drawPreview();
+});
+
+document.querySelectorAll('[data-style]').forEach((b) => b.addEventListener('click', () => {
+  S.style = b.dataset.style;
+  document.querySelectorAll('[data-style]').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
+  drawPreview();
+}));
+$('strength').addEventListener('input', (e) => { S.strength = +e.target.value; drawPreview(); });
+$('size').addEventListener('input', (e) => { S.size = +e.target.value; drawPreview(); });
+$('selAll').addEventListener('click', () => { S.people.forEach((p) => { p.selected = true; p.tracks.forEach((t) => t.override = null); }); renderPeople(); drawPreview(); updateExportHint(); });
+$('selNone').addEventListener('click', () => { S.people.forEach((p) => { p.selected = false; p.tracks.forEach((t) => t.override = null); }); renderPeople(); drawPreview(); updateExportHint(); });
+$('toStart').addEventListener('click', () => { pausePreview(); show('stepPick'); });
+
+// ---------- export ----------
+const xv = $('expView'), xctx = xv.getContext('2d');
+let audio = null; // { ctx, dest } created once (an element can only be connected once)
+let rec = null, expCancelled = false, wakeLock = null;
+
+function pickMime() {
+  if (!window.MediaRecorder) return null;
+  const c = ['video/mp4;codecs=avc1.640028,mp4a.40.2', 'video/mp4;codecs=avc1.42E01E,mp4a.40.2', 'video/mp4;codecs=avc1,mp4a', 'video/mp4',
+             'video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm'];
+  for (const m of c) { try { if (MediaRecorder.isTypeSupported(m)) return m; } catch {} }
+  return '';
+}
+
+$('exportBtn').addEventListener('click', () => {
+  // Everything up to play() runs synchronously so phones accept it as a user action.
+  pausePreview();
+  const mime = pickMime();
+  if (mime === null || !xv.captureStream) {
+    $('exportHint').innerHTML = '<span class="err">This browser can\'t record video. Please use an up-to-date Chrome or Safari.</span>';
+    return;
+  }
+  const s = Math.min(1, 1920 / Math.max(S.vw, S.vh));
+  xv.width = Math.round(S.vw * s / 2) * 2; xv.height = Math.round(S.vh * s / 2) * 2;
+  xctx.drawImage(v, 0, 0, xv.width, xv.height);
+  const vstream = xv.captureStream(30);
+  const tracks = [...vstream.getVideoTracks()];
+  let audioNote = '';
+  try {
+    if (!audio) {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      const ctx = new AC();
+      const src = ctx.createMediaElementSource(ev);
+      const dest = ctx.createMediaStreamDestination();
+      src.connect(dest);           // not connected to the speakers: export is silent on your device
+      audio = { ctx, dest };
+    }
+    audio.ctx.resume();
+    tracks.push(...audio.dest.stream.getAudioTracks());
+  } catch (e) { console.warn('audio', e); audioNote = ' (without sound: this browser would not share the audio)'; }
+  ev.muted = false; ev.volume = 1;
+  try { ev.currentTime = 0; } catch {}
+  const stream = new MediaStream(tracks);
+  const pixels = xv.width * xv.height;
+  const vbr = pixels >= 1920 * 1080 * 0.9 ? 10e6 : pixels >= 1280 * 720 * 0.9 ? 6e6 : 3e6;
+  try { rec = new MediaRecorder(stream, mime ? { mimeType: mime, videoBitsPerSecond: vbr, audioBitsPerSecond: 160000 } : { videoBitsPerSecond: vbr }); }
+  catch (e) { rec = new MediaRecorder(stream); }
+  const chunks = [];
+  rec.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
+  expCancelled = false;
+  const usedMime = rec.mimeType || mime || 'video/webm';
+  S.resultExt = usedMime.includes('mp4') ? 'mp4' : 'webm';
+  rec.onstop = () => {
+    releaseWake();
+    if (expCancelled) { show('stepEdit'); drawPreview(); return; }
+    S.resultBlob = new Blob(chunks, { type: usedMime.split(';')[0] });
+    const r = $('result'); if (r.src) URL.revokeObjectURL(r.src);
+    r.src = URL.createObjectURL(S.resultBlob);
+    $('saveMsg').textContent = `${(S.resultBlob.size / 1048576).toFixed(1)} MB · ${S.resultExt.toUpperCase()}${audioNote}`;
+    show('stepDone');
+  };
+  show('stepExport');
+  $('expBar').style.width = '0%'; $('expText').textContent = 'Starting…';
+  const p = ev.play();
+  rec.start(1000);
+  if (p && p.catch) p.catch((e) => { console.error(e); stopExport(true); $('exportHint').innerHTML = '<span class="err">Playback was blocked. Tap “Create blurred video” again.</span>'; });
+  requestWake();
+  exportLoop();
+});
+
+function exportLoop() {
+  const step = (now, meta) => {
+    if (!rec || rec.state === 'inactive') return;
+    const t = meta && meta.mediaTime !== undefined ? meta.mediaTime : ev.currentTime;
+    renderFrame(xctx, ev, t, false);
+    $('expBar').style.width = (100 * clamp(t / S.duration, 0, 1)).toFixed(1) + '%';
+    $('expText').textContent = fmt(t) + ' of ' + fmt(S.duration);
+    if (ev.requestVideoFrameCallback) ev.requestVideoFrameCallback(step); else requestAnimationFrame(() => step());
+  };
+  if (ev.requestVideoFrameCallback) ev.requestVideoFrameCallback(step); else requestAnimationFrame(() => step());
+}
+ev.addEventListener('ended', () => { if (rec && rec.state !== 'inactive') { renderFrame(xctx, ev, ev.currentTime, false); setTimeout(() => stopExport(false), 250); } });
+function stopExport(cancel) {
+  expCancelled = cancel;
+  try { ev.pause(); } catch {}
+  if (rec && rec.state !== 'inactive') rec.stop();
+}
+$('expCancel').addEventListener('click', () => stopExport(true));
+document.addEventListener('visibilitychange', () => {
+  if (!rec || rec.state === 'inactive') return;
+  if (document.hidden) { ev.pause(); try { rec.pause(); } catch {} }
+  else { try { rec.resume(); } catch {} ev.play().catch(() => {}); requestWake(); }
+});
+async function requestWake() { try { if (navigator.wakeLock) wakeLock = await navigator.wakeLock.request('screen'); } catch {} }
+function releaseWake() { try { wakeLock && wakeLock.release(); } catch {} wakeLock = null; }
+
+// ---------- save ----------
+$('backEdit').addEventListener('click', () => { show('stepEdit'); drawPreview(); });
+function resultFile() {
+  const name = `${S.name}-blurred.${S.resultExt}`;
+  const type = S.resultExt === 'mp4' ? 'video/mp4' : 'video/webm';
+  return new File([S.resultBlob], name, { type });
+}
+function downloadResult() {
+  const f = resultFile();
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(f); a.download = f.name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+  $('saveMsg').textContent = 'Downloaded as ' + f.name + '.';
+}
+const isPhone = matchMedia('(pointer: coarse)').matches;
+$('saveBtn').addEventListener('click', () => {
+  if (!S.resultBlob) return;
+  const msg = $('saveMsg');
+  const f = resultFile();
+  // On phones, the share sheet lets you save straight to Photos / Gallery.
+  // (No await before share(): it must run directly from the tap.)
+  if (isPhone && navigator.canShare && navigator.share) {
+    let ok = false; try { ok = navigator.canShare({ files: [f] }); } catch {}
+    if (ok) {
+      navigator.share({ files: [f], title: f.name })
+        .then(() => { msg.textContent = 'Done. On iPhone, “Save Video” puts it in Photos.'; })
+        .catch((e) => {
+          if (e && e.name === 'AbortError') msg.textContent = 'Not saved. Tap “Save video” to try again, or use “Download file”.';
+          else downloadResult();
+        });
+      return;
+    }
+  }
+  downloadResult();
+});
+$('dlBtn').addEventListener('click', (e) => { e.preventDefault(); if (S.resultBlob) downloadResult(); });
+
+// expose for testing
+window.__fb = { S, faceapi, modelsP };
+</script>
+</body>
+</html>
