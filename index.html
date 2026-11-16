@@ -152,6 +152,15 @@
     </div>
 
     <div class="card">
+      <h2>Quality</h2>
+      <div class="seg" role="group" aria-label="Quality">
+        <button data-quality="standard" aria-pressed="true">Standard</button>
+        <button data-quality="high" aria-pressed="false">High</button>
+      </div>
+      <p id="qualityHint" class="small muted" style="margin:8px 0 0"></p>
+    </div>
+
+    <div class="card">
       <div class="row">
         <button id="toStart">Start over</button>
         <span class="grow"></span>
@@ -207,7 +216,7 @@ const S = {
   file: null, url: null, name: 'video', duration: 0, vw: 0, vh: 0,
   mode: 'standard', sampleDt: 0.2,
   tracks: [], people: [],
-  style: 'blur', strength: 0.6, size: 0.3,
+  style: 'blur', strength: 0.6, size: 0.3, quality: 'standard',
   cancel: false, resultBlob: null, resultExt: 'mp4',
 };
 
@@ -717,7 +726,30 @@ function renderPeople() {
   }
 }
 
+function exportPlan() {
+  const high = S.quality === 'high';
+  const s = Math.min(1, (high ? 3840 : 1920) / Math.max(S.vw, S.vh));
+  const w = Math.round(S.vw * s / 2) * 2, h = Math.round(S.vh * s / 2) * 2, px = w * h;
+  const vbr = high
+    ? (px >= 3840 * 2160 * 0.9 ? 45e6 : px >= 2560 * 1440 * 0.9 ? 28e6 : px >= 1920 * 1080 * 0.9 ? 18e6 : px >= 1280 * 720 * 0.9 ? 9e6 : 5e6)
+    : (px >= 1920 * 1080 * 0.9 ? 10e6 : px >= 1280 * 720 * 0.9 ? 6e6 : 3e6);
+  return { high, w, h, vbr, mb: (vbr + 160000) * S.duration / 8 / 1048576 };
+}
+function updateQualityHint() {
+  const q = exportPlan(), size = q.mb < 10 ? q.mb.toFixed(1) : Math.round(q.mb);
+  const res = Math.min(q.w, q.h) >= 2000 ? '4K' : Math.min(q.w, q.h) + 'p';
+  $('qualityHint').textContent = q.high
+    ? `Keeps your video's resolution (${res}, up to 4K) and frame rate (up to 60 fps), with less compression. About ${size} MB. Heavier for your phone: older phones may stutter, so it's best for short clips.`
+    : `Full HD at most (${res}), 30 frames per second. Works smoothly on every phone. About ${size} MB.`;
+}
+document.querySelectorAll('[data-quality]').forEach((b) => b.addEventListener('click', () => {
+  S.quality = b.dataset.quality;
+  document.querySelectorAll('[data-quality]').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
+  updateQualityHint();
+}));
+
 function updateExportHint() {
+  updateQualityHint();
   const n = S.people.filter((p) => p.selected).length;
   const manual = S.tracks.some((t) => t.override === true);
   $('exportHint').textContent = (n || manual)
@@ -813,10 +845,12 @@ $('exportBtn').addEventListener('click', () => {
     $('exportHint').innerHTML = '<span class="err">This browser can\'t record video. Please use an up-to-date Chrome or Safari.</span>';
     return;
   }
-  const s = Math.min(1, 1920 / Math.max(S.vw, S.vh));
-  xv.width = Math.round(S.vw * s / 2) * 2; xv.height = Math.round(S.vh * s / 2) * 2;
+  const plan = exportPlan();
+  xv.width = plan.w; xv.height = plan.h;
   xctx.drawImage(v, 0, 0, xv.width, xv.height);
-  const vstream = xv.captureStream(30);
+  // High: a new frame is recorded for every video frame (keeps 60 fps). Standard: at most 30 fps.
+  const vstream = plan.high ? xv.captureStream() : xv.captureStream(30);
+  expDrops = 0; expFrames = 0; expLastPF = null;
   const tracks = [...vstream.getVideoTracks()];
   let audioNote = '';
   try {
@@ -834,8 +868,7 @@ $('exportBtn').addEventListener('click', () => {
   ev.muted = false; ev.volume = 1;
   try { ev.currentTime = 0; } catch {}
   const stream = new MediaStream(tracks);
-  const pixels = xv.width * xv.height;
-  const vbr = pixels >= 1920 * 1080 * 0.9 ? 10e6 : pixels >= 1280 * 720 * 0.9 ? 6e6 : 3e6;
+  const vbr = plan.vbr;
   try { rec = new MediaRecorder(stream, mime ? { mimeType: mime, videoBitsPerSecond: vbr, audioBitsPerSecond: 160000 } : { videoBitsPerSecond: vbr }); }
   catch (e) { rec = new MediaRecorder(stream); }
   const chunks = [];
@@ -849,7 +882,9 @@ $('exportBtn').addEventListener('click', () => {
     S.resultBlob = new Blob(chunks, { type: usedMime.split(';')[0] });
     const r = $('result'); if (r.src) URL.revokeObjectURL(r.src);
     r.src = URL.createObjectURL(S.resultBlob);
-    $('saveMsg').textContent = `${(S.resultBlob.size / 1048576).toFixed(1)} MB · ${S.resultExt.toUpperCase()}${audioNote}`;
+    const dropped = expFrames > 30 && expDrops / (expFrames + expDrops) > 0.05;
+    $('saveMsg').innerHTML = `${xv.width}×${xv.height} · ${(S.resultBlob.size / 1048576).toFixed(1)} MB · ${S.resultExt.toUpperCase()}${audioNote}`
+      + (dropped ? `<br><span class="warn">Your phone couldn't keep up and skipped some frames, so the video may look jerky in places. ${S.quality === 'high' ? 'Try Standard quality, or close other apps and try again.' : 'Close other apps and try again.'}</span>` : '');
     show('stepDone');
   };
   show('stepExport');
@@ -861,9 +896,14 @@ $('exportBtn').addEventListener('click', () => {
   exportLoop();
 });
 
+let expDrops = 0, expFrames = 0, expLastPF = null;
 function exportLoop() {
   const step = (now, meta) => {
     if (!rec || rec.state === 'inactive') return;
+    if (meta && meta.presentedFrames !== undefined) {
+      if (expLastPF !== null && meta.presentedFrames - expLastPF > 1) expDrops += meta.presentedFrames - expLastPF - 1;
+      expLastPF = meta.presentedFrames; expFrames++;
+    }
     const t = meta && meta.mediaTime !== undefined ? meta.mediaTime : ev.currentTime;
     renderFrame(xctx, ev, t, false);
     $('expBar').style.width = (100 * clamp(t / S.duration, 0, 1)).toFixed(1) + '%';
