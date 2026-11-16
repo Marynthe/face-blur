@@ -148,7 +148,7 @@
       <label class="ctl" for="strength">Strength</label>
       <input type="range" id="strength" min="0" max="1" step="0.05" value="0.6">
       <label class="ctl" for="size">Area size</label>
-      <input type="range" id="size" min="0" max="1" step="0.05" value="0.45">
+      <input type="range" id="size" min="0" max="1" step="0.05" value="0.3">
     </div>
 
     <div class="card">
@@ -207,7 +207,7 @@ const S = {
   file: null, url: null, name: 'video', duration: 0, vw: 0, vh: 0,
   mode: 'standard', sampleDt: 0.2,
   tracks: [], people: [],
-  style: 'blur', strength: 0.6, size: 0.45,
+  style: 'blur', strength: 0.6, size: 0.3,
   cancel: false, resultBlob: null, resultExt: 'mp4',
 };
 
@@ -394,13 +394,13 @@ function assign(dets, t, cut) {
   dets.forEach((d, di) => active.forEach((tr, ti) => {
     const pr = predict(tr, t);
     const o = iou(pr, d);
-    const dd = dist(tr.mean, d.d);
+    const dd = Math.min(dist(recentDesc(tr.pts), d.d), dist(tr.mean, d.d) + 0.05);
     const cdx = (pr.x + pr.w / 2) - (d.x + d.w / 2), cdy = (pr.y + pr.h / 2) - (d.y + d.h / 2);
     const cd = Math.hypot(cdx, cdy) / Math.max(pr.w, d.w);
     let okm = false;
-    if (o > 0.3 && dd < 0.6) okm = true;              // same place, similar face
-    else if (o > 0.05 && dd < 0.5) okm = true;        // moved a bit
-    else if (cd < 2.5 && dd < 0.4) okm = true;        // moved fast, clearly same face
+    if (o > 0.3 && dd < 0.5) okm = true;              // same place, same face
+    else if (o > 0.05 && dd < 0.42) okm = true;       // moved a bit
+    else if (cd < 2 && dd < 0.36) okm = true;         // moved fast, clearly same face
     if (okm) pairs.push({ di, ti, cost: dd - 0.6 * o });
   }));
   pairs.sort((a, b) => a.cost - b.cost);
@@ -420,14 +420,69 @@ function assign(dets, t, cut) {
 }
 
 function addToTrack(tr, d, t) {
-  tr.pts.push({ t, x: d.x, y: d.y, w: d.w, h: d.h });
+  tr.pts.push({ t, x: d.x, y: d.y, w: d.w, h: d.h, s: d.s, d: d.d });
   tr.lastT = t; tr.maxS = Math.max(tr.maxS, d.s);
   const wgt = d.s;
   for (let i = 0; i < 128; i++) tr.sum[i] += d.d[i] * wgt;
   tr.n += wgt;
   for (let i = 0; i < 128; i++) tr.mean[i] = tr.sum[i] / tr.n;
   const q = d.s * Math.sqrt(d.w * d.h);  // prefer confident, large faces for the thumbnail
-  if (q > tr.thumbScore) { tr.thumbScore = q; tr.thumb = makeThumb(d); }
+  if (q > tr.thumbScore) { tr.thumbScore = q; tr.thumb = makeThumb(d); tr.thumbT = t; }
+}
+// average descriptor of the last few detections (follows gradual changes in light / angle)
+function recentDesc(pts, n = 6) {
+  const m = new Float32Array(128), from = Math.max(0, pts.length - n);
+  for (let i = from; i < pts.length; i++) for (let k = 0; k < 128; k++) m[k] += pts[i].d[k];
+  for (let k = 0; k < 128; k++) m[k] /= (pts.length - from);
+  return m;
+}
+
+// ---------- split appearances that switched to another person ----------
+function trackFromPts(pts, parent) {
+  const tr = { id: nextTrackId++, pts, sum: new Float32Array(128), n: 0, mean: new Float32Array(128),
+               lastT: pts[pts.length - 1].t, thumb: null, thumbScore: -1, thumbT: -1, override: null, person: null, maxS: 0 };
+  for (const q of pts) {
+    for (let i = 0; i < 128; i++) tr.sum[i] += q.d[i] * q.s;
+    tr.n += q.s; tr.maxS = Math.max(tr.maxS, q.s);
+  }
+  for (let i = 0; i < 128; i++) tr.mean[i] = tr.sum[i] / tr.n;
+  if (parent && pts.some((q) => q.t === parent.thumbT)) { tr.thumb = parent.thumb; tr.thumbScore = parent.thumbScore; tr.thumbT = parent.thumbT; }
+  return tr;
+}
+function splitTracks() {
+  const out = [];
+  for (const tr of S.tracks) {
+    const p = tr.pts;
+    if (p.length < 2) { out.push(tr); continue; }
+    const segs = []; let cur = [p[0]];
+    for (let i = 1; i < p.length; i++) {
+      const m = recentDesc(cur, 8), di = dist(p[i].d, m);
+      if (di > 0.48) {
+        const dn = i + 1 < p.length ? dist(p[i + 1].d, m) : di;
+        if (dn > 0.44) { segs.push(cur); cur = [p[i]]; continue; }   // identity changed: start a new appearance
+        // one odd detection between two good ones: keep it only if it is where the face should be
+        const a = p[i - 1], b = p[i + 1];
+        const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, w: (a.w + b.w) / 2, h: (a.h + b.h) / 2 };
+        if (iou(mid, p[i]) < 0.3) { segs.push([p[i]]); continue; }
+      }
+      cur.push(p[i]);
+    }
+    segs.push(cur);
+    if (segs.length === 1) out.push(tr);
+    else for (const sg of segs) out.push(trackFromPts(sg, tr));
+  }
+  out.sort((a, b) => a.pts[0].t - b.pts[0].t);
+  S.tracks = out;
+}
+async function fillThumbs() {
+  for (const tr of S.tracks) {
+    if (tr.thumb) continue;
+    let best = tr.pts[0], bq = -1;
+    for (const q of tr.pts) { const v2 = q.s * Math.sqrt(q.w * q.h); if (v2 > bq) { bq = v2; best = q; } }
+    await seekTo(v, best.t);
+    dctx.drawImage(v, 0, 0, dcan.width, dcan.height);
+    tr.thumb = makeThumb(best); tr.thumbScore = bq; tr.thumbT = best.t;
+  }
 }
 
 // ---------- grouping appearances into people ----------
@@ -442,8 +497,8 @@ function groupPeople() {
   const D = new Map();
   const key = (a, b) => a.id < b.id ? a.id + ':' + b.id : b.id + ':' + a.id;
   for (let i = 0; i < tracks.length; i++) for (let j = i + 1; j < tracks.length; j++) D.set(key(tracks[i], tracks[j]), dist(tracks[i].mean, tracks[j].mean));
-  const link = (A, B) => { let s = 0, n = 0; for (const a of A.tracks) for (const b of B.tracks) { s += D.get(key(a, b)); n++; } return s / n; };
-  const THRESH = 0.42;  // strict: better to show one person twice than to mix up two people
+  const link = (A, B) => { let s = 0, n = 0, mx = 0; for (const a of A.tracks) for (const b of B.tracks) { const d = D.get(key(a, b)); s += d; n++; if (d > mx) mx = d; } return mx > 0.5 ? Infinity : s / n; };
+  const THRESH = 0.4;  // strict: better to show one person twice than to mix up two people
   for (;;) {
     let best = null, bd = THRESH;
     for (let i = 0; i < clusters.length; i++) for (let j = i + 1; j < clusters.length; j++) {
@@ -503,7 +558,10 @@ async function scan() {
     if (i % 2 === 0) await sleep(0);
   }
   // drop one-off, low-confidence detections (likely not faces)
+  $('scanText').textContent = 'Sorting faces into people…';
+  splitTracks();
   S.tracks = S.tracks.filter((tr) => !(tr.pts.length === 1 && tr.maxS < 0.6));
+  await fillThumbs();
   groupPeople();
   enterEdit();
 }
@@ -529,12 +587,17 @@ const mid = document.createElement('canvas'); const midctx = mid.getContext('2d'
 function boxAt(tr, t) {
   const p = tr.pts, half = S.sampleDt * 0.75 + 0.1;
   if (t < p[0].t - half || t > p[p.length - 1].t + half) return null;
-  if (t <= p[0].t) return p[0];
-  if (t >= p[p.length - 1].t) return p[p.length - 1];
+  if (t <= p[0].t) return { x: p[0].x, y: p[0].y, w: p[0].w, h: p[0].h, real: true };
+  if (t >= p[p.length - 1].t) { const q = p[p.length - 1]; return { x: q.x, y: q.y, w: q.w, h: q.h, real: true }; }
   let lo = 0, hi = p.length - 1;
   while (hi - lo > 1) { const m = (lo + hi) >> 1; if (p[m].t <= t) lo = m; else hi = m; }
-  const a = p[lo], b = p[hi], k = (t - a.t) / (b.t - a.t || 1);
-  return { x: a.x + (b.x - a.x) * k, y: a.y + (b.y - a.y) * k, w: a.w + (b.w - a.w) * k, h: a.h + (b.h - a.h) * k };
+  const a = p[lo], b = p[hi], gap = b.t - a.t, k = (t - a.t) / (gap || 1);
+  const lerp = (real) => ({ x: a.x + (b.x - a.x) * k, y: a.y + (b.y - a.y) * k, w: a.w + (b.w - a.w) * k, h: a.h + (b.h - a.h) * k, real });
+  if (gap <= S.sampleDt * 1.6) return lerp(true);              // seen in both neighbouring scans
+  const jump = Math.hypot((b.x + b.w / 2) - (a.x + a.w / 2), (b.y + b.h / 2) - (a.y + a.h / 2)) / Math.max(a.w, b.w);
+  if (gap <= 0.6 && jump <= 1.5) return lerp(false);           // short miss, small move
+  const q = k < 0.5 ? a : b;                                   // long miss or big move: hold, don't slide over others
+  return { x: q.x, y: q.y, w: q.w, h: q.h, real: false };
 }
 function isBlurred(tr) { return tr.override !== null ? tr.override : tr.person.selected; }
 
@@ -588,13 +651,18 @@ function applyEffect(ctx, r) {
 function renderFrame(ctx, video, t, outlines) {
   const W = ctx.canvas.width, H = ctx.canvas.height;
   ctx.drawImage(video, 0, 0, W, H);
+  const items = [];
+  for (const tr of S.tracks) { const b = boxAt(tr, t); if (b) items.push({ tr, b, bl: isBlurred(tr) }); }
+  const centreIn = (o, b) => { const cx = o.x + o.w / 2, cy = o.y + o.h / 2; return cx > b.x && cx < b.x + b.w && cy > b.y && cy < b.y + b.h; };
+  for (const it of items) {
+    if (!it.bl || it.b.real) continue;
+    if (items.some((o) => o !== it && o.b.real && !o.bl && (iou(o.b, it.b) > 0.2 || centreIn(o.b, it.b)))) it.bl = false;
+  }
   const shown = [];
-  for (const tr of S.tracks) {
-    const b = boxAt(tr, t);
-    if (!b) continue;
-    const r = region(b, W, H), bl = isBlurred(tr);
-    if (bl) applyEffect(ctx, r);
-    shown.push({ tr, r, bl });
+  for (const it of items) {
+    const r = region(it.b, W, H);
+    if (it.bl) applyEffect(ctx, r);
+    shown.push({ tr: it.tr, r, bl: it.bl });
   }
   if (outlines) {
     const lw = Math.max(2, W / 400);
